@@ -1,0 +1,462 @@
+// UI wiring. All parsing happens in the browser; files are cached in IndexedDB, grades in localStorage.
+// `G` (grading logic) comes from grading.js.
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const KEY = 'labgrader:v1';
+const TIER_CSS = ['t0', 't1', 't2', 't3'];
+
+let S = loadState();
+let zip = null, zipPaths = [], roster = null, keyChunks = null, instrLabels = [], students = [];
+let cur = { s: 0, q: 0 };
+let objectUrls = [];
+
+function loadState() {
+  try { const s = JSON.parse(localStorage.getItem(KEY)); if (s) return s; } catch {}
+  return { name: '', questions: [], cfg: { cPts: 0.5, aPts: 0.25 }, canvasCol: null, grades: {}, fileNames: {} };
+}
+const save = () => localStorage.setItem(KEY, JSON.stringify(S));
+
+function toast(msg, ms = 3500) {
+  const t = $('#toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('show'), ms);
+}
+
+// ---------- IndexedDB file cache (so a reload resumes without re-dropping files) ----------
+function idb(mode, fn) {
+  return new Promise((resolve, reject) => {
+    const open = indexedDB.open('labgrader', 1);
+    open.onupgradeneeded = () => open.result.createObjectStore('files');
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const tx = open.result.transaction('files', mode), req = fn(tx.objectStore('files'));
+      tx.oncomplete = () => resolve(req && req.result);
+      tx.onerror = () => reject(tx.error);
+    };
+  });
+}
+
+// ---------- Loading files ----------
+async function docxParagraphs(blob) {
+  const r = await mammoth.extractRawText({ arrayBuffer: await blob.arrayBuffer() });
+  return r.value.split('\n');
+}
+
+async function ingest(kind, blob) {
+  if (kind === 'zip') {
+    zip = await JSZip.loadAsync(blob);
+    zipPaths = Object.keys(zip.files).filter(p => !zip.files[p].dir && !p.startsWith('__MACOSX/') && !/(^|\/)\.DS_Store$/.test(p));
+  } else if (kind === 'roster') {
+    roster = G.parseCanvasRoster(await blob.text());
+  } else if (kind === 'instr') {
+    instrLabels = G.parseQuestionLabels(await docxParagraphs(blob));
+  } else if (kind === 'key') {
+    keyChunks = G.parseKeyChunks(await docxParagraphs(blob));
+  }
+}
+
+function resetQuestions() {
+  const src = instrLabels.length ? instrLabels : (keyChunks ? keyChunks.labels.map(label => ({ label, prompt: '' })) : []);
+  S.questions = src.map(({ label, prompt }) => ({ label, prompt, void: false, fullCredit: false }));
+}
+
+function refresh() {
+  if (!S.questions.length) resetQuestions();
+  students = G.buildStudents(roster, zipPaths);
+  cur.s = Math.min(cur.s, Math.max(0, students.length - 1));
+  cur.q = Math.min(cur.q, Math.max(0, S.questions.length - 1));
+  save();
+  renderSetup();
+  renderHeader();
+  if (currentView() === 'grade') renderGrade(true);
+  if (currentView() === 'overview') renderOverview();
+}
+
+async function onFile(kind, file) {
+  try {
+    await ingest(kind, file);
+    await idb('readwrite', st => st.put(file, kind));
+    S.fileNames[kind] = file.name;
+    if (kind === 'instr' && !S.name) S.name = file.name.replace(/\.docx$/i, '');
+    if (kind === 'instr' || (kind === 'key' && !instrLabels.length)) resetQuestions();
+    refresh();
+    toast(`Loaded ${file.name}`);
+  } catch (e) {
+    console.error(e); toast(`Could not read ${file.name}: ${e.message}`, 6000);
+  }
+}
+
+async function restore() {
+  for (const kind of ['zip', 'roster', 'instr', 'key']) {
+    try { const blob = await idb('readonly', st => st.get(kind)); if (blob) await ingest(kind, blob); }
+    catch (e) { console.error(kind, e); }
+  }
+  refresh();
+  showView(zipPaths.length ? 'grade' : 'setup');
+}
+
+// ---------- Views ----------
+const currentView = () => document.body.dataset.view;
+function showView(v) {
+  document.body.dataset.view = v;
+  document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.view === v));
+  if (v === 'grade') renderGrade(true);
+  if (v === 'overview') renderOverview();
+}
+
+const maxPts = () => S.questions.filter(q => !q.void).length * (S.cfg.cPts + S.cfg.aPts);
+const score = s => G.scoreStudent(S.grades[s.id], S.questions, S.cfg, s.files.length > 0);
+const fmt = n => String(+n.toFixed(4));
+
+function renderHeader() {
+  $('#labName').textContent = S.name ? '· ' + S.name : '';
+  const subs = students.filter(s => s.files.length);
+  const done = subs.filter(s => score(s).ungraded === 0).length;
+  $('#progress').textContent = students.length ? `${done}/${subs.length} graded · ${students.length - subs.length} no submission` : '';
+}
+
+function renderSetup() {
+  document.querySelectorAll('.drop').forEach(d => {
+    const n = S.fileNames[d.dataset.kind];
+    d.querySelector('em').textContent = n ? '✓ ' + n : '';
+    d.classList.toggle('ok', !!n);
+  });
+  $('#name').value = S.name;
+  $('#cPts').value = S.cfg.cPts;
+  $('#aPts').value = S.cfg.aPts;
+  $('#maxPts').textContent = `· ${S.questions.filter(q => !q.void).length} graded · max ${fmt(maxPts())} pts`;
+  $('#canvasCol').innerHTML = '<option value="">— load roster, then pick the assignment —</option>' +
+    (roster ? roster.assignmentCols.map(c => `<option value="${c.index}" ${S.canvasCol === c.index ? 'selected' : ''}>${esc(c.name)}</option>`).join('') : '');
+  $('#qTable tbody').innerHTML = S.questions.map((q, i) => `
+    <tr data-i="${i}">
+      <td><input data-f="label" value="${esc(q.label)}" size="5"></td>
+      <td class="prompt" title="${esc(q.prompt)}">${esc(q.prompt)}</td>
+      <td><input type="checkbox" data-f="void" ${q.void ? 'checked' : ''}></td>
+      <td><input type="checkbox" data-f="fullCredit" ${q.fullCredit ? 'checked' : ''}></td>
+      <td><button data-del="${i}" title="Remove">✕</button></td>
+    </tr>`).join('');
+}
+
+const tierOf = (s, q, kind) => G.cellTier(S.grades[s.id], q, kind, s.files.length > 0);
+
+function chip(s, q, i, extra = '') {
+  const c = tierOf(s, q, 'c'), a = tierOf(s, q, 'a');
+  return `<span class="chip ${q.void ? 'void' : ''} ${extra}" data-q="${i}" title="Q${esc(q.label)}"><i class="${TIER_CSS[c] || ''}"></i><i class="${TIER_CSS[a] || ''}"></i></span>`;
+}
+
+function renderStudents() {
+  $('#students').innerHTML = students.map((s, i) => {
+    const sc = score(s);
+    return `<div class="stu ${i === cur.s ? 'on' : ''} ${s.files.length ? '' : 'none'}" data-s="${i}">
+      <div class="nm">${esc(s.name)} ${s.late ? '<span class="badge late">LATE</span>' : ''}${s.unmatched ? '<span class="badge">not in roster</span>' : ''}</div>
+      <div class="meta">${s.files.length ? `${fmt(sc.total)} / ${fmt(maxPts())}${sc.ungraded ? ` · ${sc.ungraded} left` : ' ✓'}` : 'no submission'}</div>
+      <div class="strip">${S.questions.map((q, j) => chip(s, q, j)).join('')}</div>
+    </div>`;
+  }).join('') || '<p class="muted pad">No students yet.</p>';
+}
+
+function renderPanel() {
+  const s = students[cur.s], q = S.questions[cur.q];
+  if (!s || !q) { $('#panel').innerHTML = '<p class="muted pad">Set up questions in Setup.</p>'; return; }
+  const g = S.grades[s.id] || {}, sc = score(s);
+  const btns = kind => G.TIERS.map((t, i) => `<button class="tier ${TIER_CSS[i]} ${tierOf(s, q, kind) === i ? 'sel' : ''}" data-kind="${kind}" data-t="${i}">${i + 1} · ${t.name}</button>`).join('');
+  const locked = q.void ? 'Voided — not graded.' : q.fullCredit ? 'Full credit for everyone.' : !s.files.length ? 'No submission — counted as missing.' : '';
+  $('#panel').innerHTML = `
+    <div class="pad">
+      <div class="who">${esc(s.name)} ${s.late ? '<span class="badge late">LATE</span>' : ''}</div>
+      <div class="muted">${fmt(sc.total)} / ${fmt(maxPts())} · completeness ${fmt(sc.comp)} · accuracy ${fmt(sc.acc)}</div>
+      <div class="strip big">${S.questions.map((qq, j) => chip(s, qq, j, j === cur.q ? 'cur' : '')).join('')}</div>
+      <h2>Q${esc(q.label)}</h2>
+      ${q.prompt ? `<p class="prompt">${esc(q.prompt)}</p>` : ''}
+      ${locked ? `<p class="locked">${locked}</p>` : `
+        <div class="lbl">Completeness <span class="muted">— key <kbd>1</kbd>–<kbd>4</kbd> sets both</span></div><div class="tiers">${btns('c')}</div>
+        <div class="lbl">Accuracy <span class="muted">— <kbd>⇧</kbd>+<kbd>1</kbd>–<kbd>4</kbd></span></div><div class="tiers">${btns('a')}</div>`}
+      <details open><summary>Answer key</summary><pre class="key">${esc(keyChunks ? keyChunks.get(q.label) || '(no key text for this label)' : 'Load the key .docx in Setup.')}</pre></details>
+      <div class="lbl">Notes for this student</div>
+      <textarea id="note" rows="3" placeholder="e.g. 1e(ii) incomplete; collab: …">${esc(g.note || '')}</textarea>
+      <div class="row"><button id="allFull">Fill remaining with full marks (F)</button></div>
+      <p class="muted small"><kbd>↑</kbd><kbd>↓</kbd> question · <kbd>←</kbd><kbd>→</kbd> student · <kbd>F</kbd> fill remaining full</p>
+    </div>`;
+}
+
+// ---------- Submission rendering ----------
+const LABEL_RE = /^\s*(?:Q(?:uestion)?\s*#?\s*)?(\d+)\s*([a-z])?\b/i;
+
+function revokeUrls() { objectUrls.forEach(URL.revokeObjectURL); objectUrls = []; }
+function blobUrl(data, type) { const u = URL.createObjectURL(new Blob([data], { type })); objectUrls.push(u); return u; }
+
+// Tag elements that start with a question label ("1a.", "Q1.") so the grader can jump to them.
+function tagLabel(el, text) {
+  const m = String(text).match(LABEL_RE);
+  if (!m) return false;
+  if (m[2]) el.dataset.label = (m[1] + m[2]).toLowerCase(); else el.dataset.sec = m[1];
+  return true;
+}
+
+async function renderXlsx(buf, host) {
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buf);
+  for (const ws of wb.worksheets) {
+    const rows = new Map(); let maxCol = 1;
+    ws.eachRow({ includeEmpty: false }, (row, r) => {
+      const cells = [];
+      row.eachCell({ includeEmpty: false }, (c, col) => {
+        if (c.isMerged && c.master !== c) return;
+        if (c.text === '' && !c.formula) return;
+        cells[col] = c; maxCol = Math.max(maxCol, col);
+      });
+      if (cells.length) rows.set(r, cells);
+    });
+    const imgs = new Map();
+    for (const im of ws.getImages()) {
+      const r = Math.floor(im.range.tl.nativeRow ?? im.range.tl.row) + 1;
+      if (!imgs.has(r)) imgs.set(r, []);
+      imgs.get(r).push(wb.getImage(im.imageId));
+    }
+    if (!rows.size && !imgs.size) continue;
+    const order = [...new Set([...rows.keys(), ...imgs.keys()])].sort((a, b) => a - b);
+    let html = `<thead><tr><th></th>${Array.from({ length: maxCol }, (_, i) => `<th>${G.colLetter(i + 1)}</th>`).join('')}</tr></thead><tbody>`;
+    let prev = 0;
+    for (const r of order) {
+      if (r - prev > 2) html += `<tr class="gap"><td colspan="${maxCol + 1}">⋯ ${r - prev - 1} empty rows</td></tr>`;
+      prev = r;
+      const cells = rows.get(r);
+      if (cells) {
+        html += `<tr data-row="${r}"><th>${r}</th>`;
+        for (let c = 1; c <= maxCol; c++) {
+          const cell = cells[c];
+          if (!cell) { html += '<td></td>'; continue; }
+          const f = cell.formula ? '=' + cell.formula.replace(/_xlfn\./g, '') : '';
+          html += `<td${f ? ' class="f"' : ''}><span>${esc(cell.text)}</span>${f ? `<code>${esc(f)}</code>` : ''}</td>`;
+        }
+        html += '</tr>';
+      }
+      for (const im of imgs.get(r) || []) {
+        const ext = String(im.extension).toLowerCase().replace('jpg', 'jpeg');
+        html += /^(png|jpeg|gif|webp|bmp)$/.test(ext)
+          ? `<tr class="img"><th>${r}</th><td colspan="${maxCol}"><img src="${blobUrl(im.buffer, 'image/' + ext)}" alt="Embedded image at row ${r}"></td></tr>`
+          : `<tr class="img"><th>${r}</th><td colspan="${maxCol}" class="muted">[${esc(ext)} image — open the original file to view]</td></tr>`;
+      }
+    }
+    const t = document.createElement('table');
+    t.className = 'sheet';
+    t.innerHTML = html + '</tbody>';
+    t.querySelectorAll('tr[data-row]').forEach(tr => {
+      for (const sp of tr.querySelectorAll('td > span')) if (sp.textContent.trim()) { tagLabel(tr, sp.textContent); break; }
+    });
+    if (wb.worksheets.length > 1) host.insertAdjacentHTML('beforeend', `<div class="sheetname">Sheet: ${esc(ws.name)}</div>`);
+    host.appendChild(t);
+  }
+}
+
+async function renderDocx(buf, host) {
+  const r = await mammoth.convertToHtml({ arrayBuffer: buf });
+  const div = document.createElement('div');
+  div.className = 'docx';
+  div.innerHTML = r.value;
+  div.querySelectorAll('a[href]').forEach(a => { if (!/^(https?:|mailto:|#)/i.test(a.getAttribute('href'))) a.removeAttribute('href'); });
+  div.querySelectorAll('p,li,h1,h2,h3,h4').forEach(el => tagLabel(el, el.textContent));
+  host.appendChild(div);
+}
+
+let renderToken = 0;
+async function renderSubmission() {
+  const s = students[cur.s], host = $('#submission');
+  const token = ++renderToken;
+  revokeUrls();
+  host.innerHTML = '';
+  if (!s) return;
+  if (!s.files.length) { host.innerHTML = '<p class="muted pad">No submission — every question counts as missing (black).</p>'; return; }
+  host.innerHTML = '<p class="muted pad">Loading…</p>';
+  const frag = document.createElement('div');
+  for (const path of s.files) {
+    const f = G.parseCanvasFilename(path);
+    const sec = document.createElement('div');
+    sec.innerHTML = `<div class="file">${esc(f.original)}</div>`;
+    frag.appendChild(sec);
+    try {
+      const buf = await zip.file(path).async('arraybuffer');
+      if (f.ext === 'xlsx' || f.ext === 'xlsm') await renderXlsx(buf, sec);
+      else if (f.ext === 'docx') await renderDocx(buf, sec);
+      else if (f.ext === 'pdf') sec.insertAdjacentHTML('beforeend', `<iframe class="pdf" src="${blobUrl(buf, 'application/pdf')}"></iframe>`);
+      else if (/^(png|jpe?g|gif|webp)$/.test(f.ext)) sec.insertAdjacentHTML('beforeend', `<img src="${blobUrl(buf, 'image/' + f.ext.replace('jpg', 'jpeg'))}" alt="">`);
+      else sec.insertAdjacentHTML('beforeend', `<p class="pad">Can't preview .${esc(f.ext)} — <a download="${esc(f.original)}" href="${blobUrl(buf, 'application/octet-stream')}">download it</a>.</p>`);
+    } catch (e) {
+      console.error(e);
+      sec.insertAdjacentHTML('beforeend', `<p class="pad error">Could not render this file (${esc(e.message)}).</p>`);
+    }
+    if (token !== renderToken) return;  // user moved on while this was loading
+  }
+  host.innerHTML = '';
+  host.appendChild(frag);
+  host.scrollTop = 0;
+  focusQuestion();
+}
+
+function focusQuestion() {
+  const q = S.questions[cur.q], host = $('#submission');
+  host.querySelectorAll('.hit').forEach(e => e.classList.remove('hit'));
+  if (!q) return;
+  const lab = q.label.toLowerCase(), n = (lab.match(/^\d+/) || [''])[0];
+  const el = host.querySelector(`[data-label="${CSS.escape(lab)}"]`) || (n && host.querySelector(`[data-sec="${CSS.escape(n)}"]`));
+  if (el) { el.classList.add('hit'); el.scrollIntoView({ block: 'start', behavior: 'smooth' }); }
+}
+
+function renderGrade(full) {
+  renderStudents();
+  renderPanel();
+  renderHeader();
+  if (full) { renderSubmission(); $('#students .stu.on')?.scrollIntoView({ block: 'nearest' }); }
+}
+
+function renderOverview() {
+  const qs = S.questions;
+  const head = `<tr><th>Student</th>${qs.map(q => `<th class="${q.void ? 'void' : ''}">${esc(q.label)}</th>`).join('')}<th></th><th>Score</th><th>Notes</th></tr>`;
+  const body = students.map((s, i) => ['c', 'a'].map((kind, k) => `<tr class="${k ? 'acc' : ''}">
+      ${k ? '' : `<td rowspan="2" class="nm"><a href="#" data-s="${i}">${esc(s.name)}</a>${s.late ? ' <span class="badge late">LATE</span>' : ''}</td>`}
+      ${qs.map((q, j) => { const t = tierOf(s, q, kind); return `<td class="cell ${TIER_CSS[t] || ''} ${q.void ? 'void' : ''}" data-s="${i}" data-q="${j}">${t == null ? '' : fmt((kind === 'c' ? S.cfg.cPts : S.cfg.aPts) * G.TIERS[t].mult)}</td>`; }).join('')}
+      <td class="muted">${kind === 'c' ? 'Completeness' : 'Accuracy'}</td>
+      ${k ? '' : `<td rowspan="2"><b>${fmt(score(s).total)}</b></td><td rowspan="2" class="muted">${esc((S.grades[s.id] || {}).note || '')}</td>`}
+    </tr>`).join('')).join('');
+  $('#overview').innerHTML = students.length ? `<table class="ov">${head}${body}</table>` : '<p class="muted">No students yet.</p>';
+}
+
+// ---------- Grading actions ----------
+const gradeOf = s => (S.grades[s.id] = S.grades[s.id] || { q: {} });
+
+function setTier(kinds, t) {
+  const s = students[cur.s], q = S.questions[cur.q];
+  if (!s || !q || q.void || q.fullCredit || !s.files.length) return;
+  const g = gradeOf(s);
+  g.q[q.label] = g.q[q.label] || { c: null, a: null };
+  for (const k of kinds) g.q[q.label][k] = t;
+  save();
+  renderGrade(false);
+}
+
+function fillFull() {
+  const s = students[cur.s];
+  if (!s || !s.files.length) return;
+  const g = gradeOf(s);
+  for (const q of S.questions) {
+    const e = g.q[q.label] = g.q[q.label] || { c: null, a: null };
+    if (e.c == null) e.c = 0;
+    if (e.a == null) e.a = 0;
+  }
+  save();
+  renderGrade(false);
+}
+
+function moveStudent(d) {
+  // Arrow keys skip non-submitters (they need no grading); clicking still selects them.
+  let i = cur.s;
+  do { i += d; } while (students[i] && !students[i].files.length);
+  if (students[i]) { cur.s = i; renderGrade(true); }
+}
+function moveQuestion(d) {
+  const i = cur.q + d;
+  if (S.questions[i]) { cur.q = i; renderPanel(); focusQuestion(); }
+}
+
+function download(name, data, type) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([data], { type }));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+const safeName = () => (S.name || 'Lab').replace(/[^\w #.-]+/g, '_');
+
+async function exportXlsx() {
+  const left = students.filter(s => s.files.length && score(s).ungraded).length;
+  if (left && !confirm(`${left} student(s) still have ungraded questions (left blank, counted as 0). Export anyway?`)) return;
+  const wb = G.buildGradebook(ExcelJS, { name: S.name, questions: S.questions, cfg: S.cfg, students, grades: S.grades });
+  download(`${safeName()} gradebook.xlsx`, await wb.xlsx.writeBuffer(), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+}
+
+function exportCsv() {
+  if (!roster) return toast('Load the Canvas roster .csv in Setup first.');
+  if (S.canvasCol == null) { showView('setup'); return toast('Pick the Canvas column for this assignment in Setup.'); }
+  // Only fully graded students get a number; blank cells leave the Canvas grade untouched on import.
+  const totals = {};
+  for (const s of students) if (!s.unmatched && score(s).ungraded === 0) totals[s.id] = score(s).total;
+  const skipped = students.filter(s => s.files.length && score(s).ungraded).length;
+  if (skipped) toast(`${skipped} partially graded student(s) left blank in the CSV.`, 5000);
+  download(`${safeName()} canvas import.csv`, G.buildCanvasCsv(roster, S.canvasCol, totals), 'text/csv');
+}
+
+// ---------- Events ----------
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => showView(b.dataset.view));
+document.querySelectorAll('.drop input').forEach(inp => inp.onchange = () => {
+  if (inp.files[0]) onFile(inp.closest('.drop').dataset.kind, inp.files[0]);
+  inp.value = '';
+});
+$('#name').oninput = e => { S.name = e.target.value; save(); renderHeader(); };
+$('#cPts').oninput = e => { S.cfg.cPts = +e.target.value || 0; save(); };
+$('#aPts').oninput = e => { S.cfg.aPts = +e.target.value || 0; save(); };
+$('#cPts').onchange = $('#aPts').onchange = renderSetup;
+$('#canvasCol').onchange = e => { S.canvasCol = e.target.value === '' ? null : +e.target.value; save(); };
+$('#addQ').onclick = () => { S.questions.push({ label: '', prompt: '', void: false, fullCredit: false }); save(); renderSetup(); };
+$('#resetQ').onclick = () => { if (confirm('Replace the question list with the one read from the files?')) { resetQuestions(); save(); renderSetup(); } };
+$('#qTable').addEventListener('input', e => {
+  const tr = e.target.closest('tr[data-i]'), f = e.target.dataset.f;
+  if (!tr || !f) return;
+  S.questions[+tr.dataset.i][f] = e.target.type === 'checkbox' ? e.target.checked : e.target.value.trim();
+  save();
+  if (e.target.type === 'checkbox') renderSetup();
+});
+$('#qTable').addEventListener('click', e => {
+  const d = e.target.dataset.del;
+  if (d != null) { S.questions.splice(+d, 1); save(); renderSetup(); }
+});
+$('#clearAll').onclick = async () => {
+  if (!confirm('Clear all loaded files AND all grades for this lab? Export the gradebook first if you need it.')) return;
+  localStorage.removeItem(KEY);
+  await idb('readwrite', st => st.clear());
+  location.reload();
+};
+$('#exportXlsx').onclick = () => exportXlsx().catch(e => { console.error(e); toast('Export failed: ' + e.message, 6000); });
+$('#exportCsv').onclick = exportCsv;
+
+$('#students').addEventListener('click', e => {
+  const el = e.target.closest('[data-s]');
+  if (!el) return;
+  cur.s = +el.dataset.s;
+  const c = e.target.closest('[data-q]');
+  if (c) cur.q = +c.dataset.q;
+  renderGrade(true);
+});
+$('#panel').addEventListener('click', e => {
+  const b = e.target.closest('.tier');
+  if (b) return setTier([b.dataset.kind], +b.dataset.t);
+  const c = e.target.closest('[data-q]');
+  if (c) { cur.q = +c.dataset.q; renderPanel(); focusQuestion(); }
+  if (e.target.id === 'allFull') fillFull();
+});
+$('#panel').addEventListener('input', e => {
+  if (e.target.id !== 'note') return;
+  gradeOf(students[cur.s]).note = e.target.value;
+  save();
+});
+$('#overview').addEventListener('click', e => {
+  const el = e.target.closest('[data-s]');
+  if (!el) return;
+  e.preventDefault();
+  cur.s = +el.dataset.s;
+  if (el.dataset.q) cur.q = +el.dataset.q;
+  showView('grade');
+});
+
+document.addEventListener('keydown', e => {
+  if (currentView() !== 'grade' || e.target.matches('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey) return;
+  const digit = /^Digit([1-4])$/.exec(e.code);
+  if (digit) { e.preventDefault(); return setTier(e.shiftKey ? ['a'] : ['c', 'a'], +digit[1] - 1); }
+  const k = e.key;
+  if (k === 'ArrowDown') { e.preventDefault(); moveQuestion(1); }
+  else if (k === 'ArrowUp') { e.preventDefault(); moveQuestion(-1); }
+  else if (k === 'ArrowRight' || k === 'j') { e.preventDefault(); moveStudent(1); }
+  else if (k === 'ArrowLeft' || k === 'k') { e.preventDefault(); moveStudent(-1); }
+  else if (k === 'f' || k === 'F') { e.preventDefault(); fillFull(); }
+});
+
+restore().catch(e => { console.error(e); toast('Could not restore saved files: ' + e.message, 6000); showView('setup'); });

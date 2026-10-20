@@ -1,0 +1,9 @@
+# Never commit student data (this repo is public)
+*.zip
+*.xlsx
+*.xls
+*.docx
+*.csv
+*.pdf
+.DS_Store
+node_modules/

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lab Grader</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <strong>Lab Grader</strong>
+  <span id="labName" class="muted"></span>
+  <nav>
+    <button data-view="setup">Setup</button>
+    <button data-view="grade">Grade</button>
+    <button data-view="overview">Overview</button>
+  </nav>
+  <span id="progress" class="muted"></span>
+  <span class="spacer"></span>
+  <button id="exportXlsx">Export gradebook .xlsx</button>
+  <button id="exportCsv">Export Canvas CSV</button>
+</header>
+
+<main>
+  <section id="view-setup" class="view">
+    <div class="setup">
+      <p class="muted">Files stay in this browser. Nothing is uploaded anywhere.</p>
+      <div class="drops">
+        <label class="drop" data-kind="zip"><b>1. Submissions .zip</b><span>Canvas → Assignment → Download Submissions</span><input type="file" accept=".zip"><em></em></label>
+        <label class="drop" data-kind="roster"><b>2. Roster .csv</b><span>Canvas → Grades → Export → CSV (marks non-submitters)</span><input type="file" accept=".csv"><em></em></label>
+        <label class="drop" data-kind="instr"><b>3. Instructions .docx</b><span>Question labels (1a, 1b…) are read from here</span><input type="file" accept=".docx"><em></em></label>
+        <label class="drop" data-kind="key"><b>4. Answer key .docx</b><span>Shown next to each question while grading</span><input type="file" accept=".docx"><em></em></label>
+      </div>
+
+      <div class="row">
+        <label>Lab name <input id="name" placeholder="e.g. Lab 2"></label>
+        <label>Completeness pts / question <input id="cPts" type="number" step="0.0625" min="0"></label>
+        <label>Accuracy pts / question <input id="aPts" type="number" step="0.0625" min="0"></label>
+        <label>Canvas column <select id="canvasCol"></select></label>
+      </div>
+
+      <h3>Questions <span id="maxPts" class="muted"></span></h3>
+      <table id="qTable" class="qtable">
+        <thead><tr><th>Label</th><th>Prompt</th><th title="Excluded from the total">Void</th><th title="Everyone gets full marks">Full credit for all</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="row">
+        <button id="addQ">+ Add question</button>
+        <button id="resetQ">Reset questions from files</button>
+        <span class="spacer"></span>
+        <button id="clearAll" class="danger">Start a new lab (clears files and grades)</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="view-grade" class="view grade">
+    <aside id="students"></aside>
+    <div id="submission"><p class="muted pad">Load a submissions .zip in Setup.</p></div>
+    <aside id="panel"></aside>
+  </section>
+
+  <section id="view-overview" class="view"><div id="overview" class="pad"></div></section>
+</main>
+
+<div id="toast"></div>
+
+<script src="vendor/jszip.min.js"></script>
+<script src="vendor/exceljs.min.js"></script>
+<script src="vendor/mammoth.browser.min.js"></script>
+<script src="grading.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
