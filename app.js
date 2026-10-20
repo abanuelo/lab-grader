@@ -12,8 +12,13 @@ let objectUrls = [];
 let formulas = [], subKinds = new Set();  // Excel formulas found in the current submission, and its file types
 
 function loadState() {
-  try { const s = JSON.parse(localStorage.getItem(KEY)); if (s) return s; } catch {}
-  return { name: '', questions: [], cfg: { cPts: 0.5, aPts: 0.25 }, canvasCol: null, grades: {}, fileNames: {} };
+  // Defaults mirror the Lab 2 gradebook: 10 completeness + 5 accuracy points, Excel submissions.
+  const base = { name: '', questions: [], cfg: { cTotal: 10, aTotal: 5 }, expectedExt: 'xlsx', canvasCol: null, grades: {}, fileNames: {} };
+  try {
+    const s = JSON.parse(localStorage.getItem(KEY));
+    if (s) return { ...base, ...s, cfg: { ...base.cfg, ...s.cfg } };  // older saves had per-question cPts/aPts
+  } catch {}
+  return base;
 }
 const save = () => localStorage.setItem(KEY, JSON.stringify(S));
 
@@ -104,7 +109,10 @@ function showView(v) {
   if (v === 'overview') renderOverview();
 }
 
-const maxPts = () => S.questions.filter(q => !q.void).length * (S.cfg.cPts + S.cfg.aPts);
+const perQ = () => G.perQuestion(S.cfg, S.questions);
+const maxPts = () => (perQ().n ? S.cfg.cTotal + S.cfg.aTotal : 0);
+const issues = s => G.formatIssues(s.files, S.expectedExt);
+const warnIcon = s => { const w = issues(s); return w.length ? ` <span class="warnicon" title="${esc(w.join('; '))}">⚠</span>` : ''; };
 const score = s => G.scoreStudent(S.grades[s.id], S.questions, S.cfg, s.files.length > 0);
 const fmt = n => String(+n.toFixed(4));
 
@@ -122,9 +130,18 @@ function renderSetup() {
     d.classList.toggle('ok', !!n);
   });
   $('#name').value = S.name;
-  $('#cPts').value = S.cfg.cPts;
-  $('#aPts').value = S.cfg.aPts;
-  $('#maxPts').textContent = `· ${S.questions.filter(q => !q.void).length} graded · max ${fmt(maxPts())} pts`;
+  $('#cTotal').value = S.cfg.cTotal;
+  $('#aTotal').value = S.cfg.aTotal;
+  $('#expectedExt').value = S.expectedExt;
+  const p = perQ();
+  $('#maxPts').textContent = `· ${p.n} graded · max ${fmt(maxPts())} pts`;
+  // Same derivation as the gradebook legend: full = total ÷ graded questions, partial = ½, low = ¼, missing = 0.
+  $('#ptsInfo').innerHTML = p.n ? `
+    <p class="muted small">Each graded question is worth <b>${fmt(p.c)}</b> completeness (${fmt(S.cfg.cTotal)} ÷ ${p.n}) and
+      <b>${fmt(p.a)}</b> accuracy (${fmt(S.cfg.aTotal)} ÷ ${p.n}). Voiding a question spreads its points over the rest.</p>
+    <table class="legend"><tr><th></th>${G.TIERS.map((t, i) => `<th class="${TIER_CSS[i]}">${t.name}</th>`).join('')}</tr>
+      <tr><td>Completeness</td>${G.TIERS.map(t => `<td>${fmt(p.c * t.mult)}</td>`).join('')}</tr>
+      <tr><td>Accuracy</td>${G.TIERS.map(t => `<td>${fmt(p.a * t.mult)}</td>`).join('')}</tr></table>` : '';
   $('#canvasCol').innerHTML = '<option value="">— load roster, then pick the assignment —</option>' +
     (roster ? roster.assignmentCols.map(c => `<option value="${c.index}" ${S.canvasCol === c.index ? 'selected' : ''}>${esc(c.name)}</option>`).join('') : '');
   $('#qTable tbody').innerHTML = S.questions.map((q, i) => `
@@ -148,7 +165,7 @@ function renderStudents() {
   $('#students').innerHTML = students.map((s, i) => {
     const sc = score(s);
     return `<div class="stu ${i === cur.s ? 'on' : ''} ${s.files.length ? '' : 'none'}" data-s="${i}">
-      <div class="nm">${esc(s.name)} ${s.late ? '<span class="badge late">LATE</span>' : ''}${s.unmatched ? '<span class="badge">not in roster</span>' : ''}</div>
+      <div class="nm">${esc(s.name)}${warnIcon(s)} ${s.late ? '<span class="badge late">LATE</span>' : ''}${s.unmatched ? '<span class="badge">not in roster</span>' : ''}</div>
       <div class="meta">${s.files.length ? `${fmt(sc.total)} / ${fmt(maxPts())}${sc.ungraded ? ` · ${sc.ungraded} left` : ' ✓'}` : 'no submission'}</div>
       <div class="strip">${S.questions.map((q, j) => chip(s, q, j)).join('')}</div>
     </div>`;
@@ -164,6 +181,7 @@ function renderPanel() {
   $('#panel').innerHTML = `
     <div class="pad">
       <div class="who">${esc(s.name)} ${s.late ? '<span class="badge late">LATE</span>' : ''}</div>
+      ${issues(s).map(w => `<div class="fmtwarn">⚠ ${esc(w)}</div>`).join('')}
       <div class="muted">${fmt(sc.total)} / ${fmt(maxPts())} · completeness ${fmt(sc.comp)} · accuracy ${fmt(sc.acc)}</div>
       <div class="strip big">${S.questions.map((qq, j) => chip(s, qq, j, j === cur.q ? 'cur' : '')).join('')}</div>
       <h2>Q${esc(q.label)}</h2>
@@ -314,7 +332,8 @@ async function renderSubmission() {
   for (const path of s.files) {
     const f = G.parseCanvasFilename(path);
     const sec = document.createElement('div');
-    sec.innerHTML = `<div class="file">${esc(f.original)}</div>`;
+    const bad = G.formatIssues([path], S.expectedExt)[0];
+    sec.innerHTML = `<div class="file${bad ? ' bad' : ''}">${bad ? `⚠ ${esc(f.original)} — ${esc(bad)}; showing its content anyway` : esc(f.original)}</div>`;
     frag.appendChild(sec);
     try {
       const buf = await zip.file(path).async('arraybuffer');
@@ -356,8 +375,8 @@ function renderOverview() {
   const qs = S.questions;
   const head = `<tr><th>Student</th>${qs.map(q => `<th class="${q.void ? 'void' : ''}">${esc(q.label)}</th>`).join('')}<th></th><th>Score</th><th>Notes</th></tr>`;
   const body = students.map((s, i) => ['c', 'a'].map((kind, k) => `<tr class="${k ? 'acc' : ''}">
-      ${k ? '' : `<td rowspan="2" class="nm"><a href="#" data-s="${i}">${esc(s.name)}</a>${s.late ? ' <span class="badge late">LATE</span>' : ''}</td>`}
-      ${qs.map((q, j) => { const t = tierOf(s, q, kind); return `<td class="cell ${TIER_CSS[t] || ''} ${q.void ? 'void' : ''}" data-s="${i}" data-q="${j}">${t == null ? '' : fmt((kind === 'c' ? S.cfg.cPts : S.cfg.aPts) * G.TIERS[t].mult)}</td>`; }).join('')}
+      ${k ? '' : `<td rowspan="2" class="nm"><a href="#" data-s="${i}">${esc(s.name)}</a>${warnIcon(s)}${s.late ? ' <span class="badge late">LATE</span>' : ''}</td>`}
+      ${qs.map((q, j) => { const t = tierOf(s, q, kind); return `<td class="cell ${TIER_CSS[t] || ''} ${q.void ? 'void' : ''}" data-s="${i}" data-q="${j}">${t == null ? '' : fmt((kind === 'c' ? perQ().c : perQ().a) * G.TIERS[t].mult)}</td>`; }).join('')}
       <td class="muted">${kind === 'c' ? 'Completeness' : 'Accuracy'}</td>
       ${k ? '' : `<td rowspan="2"><b>${fmt(score(s).total)}</b></td><td rowspan="2" class="muted">${esc((S.grades[s.id] || {}).note || '')}</td>`}
     </tr>`).join('')).join('');
@@ -436,9 +455,10 @@ document.querySelectorAll('.drop input').forEach(inp => inp.onchange = () => {
   inp.value = '';
 });
 $('#name').oninput = e => { S.name = e.target.value; save(); renderHeader(); };
-$('#cPts').oninput = e => { S.cfg.cPts = +e.target.value || 0; save(); };
-$('#aPts').oninput = e => { S.cfg.aPts = +e.target.value || 0; save(); };
-$('#cPts').onchange = $('#aPts').onchange = renderSetup;
+$('#cTotal').oninput = e => { S.cfg.cTotal = +e.target.value || 0; save(); };
+$('#aTotal').oninput = e => { S.cfg.aTotal = +e.target.value || 0; save(); };
+$('#expectedExt').oninput = e => { S.expectedExt = e.target.value.trim(); save(); };
+$('#cTotal').onchange = $('#aTotal').onchange = $('#expectedExt').onchange = renderSetup;
 $('#canvasCol').onchange = e => { S.canvasCol = e.target.value === '' ? null : +e.target.value; save(); };
 $('#addQ').onclick = () => { S.questions.push({ label: '', prompt: '', void: false, fullCredit: false }); save(); renderSetup(); };
 $('#resetQ').onclick = () => { if (confirm('Replace the question list with the one read from the files?')) { resetQuestions(); save(); renderSetup(); } };

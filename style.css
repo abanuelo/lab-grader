@@ -68,6 +68,11 @@ body[data-view="grade"] #view-grade { display: grid; }
 .t3 { background: var(--t3); color: #fff; }
 
 #submission { background: #fff; }
+.warnicon { color: #b26b00; font-weight: 700; cursor: help; }
+.fmtwarn { margin-top: 6px; padding: 4px 8px; border-radius: 6px; background: #fff4d6; color: #7a4a00; font-size: 12px; }
+.file.bad { background: #b26b00; }
+table.legend { border-collapse: collapse; font-size: 12px; margin-bottom: 8px; }
+table.legend th, table.legend td { border: 1px solid var(--line); padding: 3px 8px; text-align: center; }
 .file { position: sticky; top: 0; z-index: 2; background: var(--ink); color: #fff; padding: 6px 12px; font-size: 12px; }
 .sheetname { padding: 8px 12px; font-weight: 600; background: var(--bg); }
 table.sheet { border-collapse: collapse; font-size: 13px; }

@@ -35,10 +35,12 @@
 
       <div class="row">
         <label>Lab name <input id="name" placeholder="e.g. Lab 2"></label>
-        <label>Completeness pts / question <input id="cPts" type="number" step="0.0625" min="0"></label>
-        <label>Accuracy pts / question <input id="aPts" type="number" step="0.0625" min="0"></label>
+        <label>Completeness total <input id="cTotal" type="number" step="0.5" min="0" size="5"></label>
+        <label>Accuracy total <input id="aTotal" type="number" step="0.5" min="0" size="5"></label>
+        <label>Expected file type <input id="expectedExt" placeholder="xlsx" size="8" title="Submissions in any other format get a ⚠ (still shown)"></label>
         <label>Canvas column <select id="canvasCol"></select></label>
       </div>
+      <div id="ptsInfo"></div>
 
       <h3>Questions <span id="maxPts" class="muted"></span></h3>
       <table id="qTable" class="qtable">

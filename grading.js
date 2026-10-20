@@ -121,14 +121,22 @@ function cellTier(grade, question, kind, hasSubmission) {
   return g && g[kind] != null ? g[kind] : null;
 }
 
+// Points per question come from the totals, as in the professor's legend (=10/20, =5/20):
+// voiding a question spreads its points over the rest instead of lowering the maximum.
+function perQuestion(cfg, questions) {
+  const n = questions.filter(q => !q.void).length;
+  return { n, c: n ? cfg.cTotal / n : 0, a: n ? cfg.aTotal / n : 0 };
+}
+
 function scoreStudent(grade, questions, cfg, hasSubmission) {
+  const p = perQuestion(cfg, questions);
   let comp = 0, acc = 0, ungraded = 0;
   for (const q of questions) {
     if (q.void) continue;
     const c = cellTier(grade, q, 'c', hasSubmission), a = cellTier(grade, q, 'a', hasSubmission);
     if (c == null || a == null) ungraded++;
-    comp += c == null ? 0 : cfg.cPts * TIERS[c].mult;
-    acc += a == null ? 0 : cfg.aPts * TIERS[a].mult;
+    comp += c == null ? 0 : p.c * TIERS[c].mult;
+    acc += a == null ? 0 : p.a * TIERS[a].mult;
   }
   return { comp, acc, total: comp + acc, ungraded };
 }
@@ -177,6 +185,7 @@ function buildGradebook(ExcelJS, { name, questions, cfg, students, grades }) {
   const C = { first: 2, last: nQ + 1, label: nQ + 2, sum: nQ + 3, total: nQ + 4, notes: nQ + 5, legend: nQ + 6 };
   const fill = argb => ({ type: 'pattern', pattern: 'solid', fgColor: { argb } });
   const range = r => `${colLetter(C.first)}${r}:${colLetter(C.last)}${r}`;
+  const p = perQuestion(cfg, questions);
 
   ws.getRow(1).values = ['Student ID', ...questions.map(q => 'Q' + q.label)];
   ws.getCell(1, C.total).value = 'Score';
@@ -190,7 +199,7 @@ function buildGradebook(ExcelJS, { name, questions, cfg, students, grades }) {
   students.forEach((s, i) => {
     const r = 2 + i * 2, g = grades[s.id] || {}, has = s.files.length > 0;
     ws.getCell(r, 1).value = s.name;
-    [['c', 'Completeness', cfg.cPts], ['a', 'Accuracy', cfg.aPts]].forEach(([kind, label, pts], k) => {
+    [['c', 'Completeness', p.c], ['a', 'Accuracy', p.a]].forEach(([kind, label, pts], k) => {
       const row = r + k;
       questions.forEach((q, j) => {
         const t = cellTier(g, q, kind, has);
@@ -210,12 +219,17 @@ function buildGradebook(ExcelJS, { name, questions, cfg, students, grades }) {
     if (note) ws.getCell(r, C.notes).value = note;
   });
 
-  // Legend, like the original sheet's right-hand block.
+  // Legend, like the original sheet's right-hand block, with the same derivation formulas:
+  // full = total / graded questions, partial = full/2, low = full/4, missing = 0.
   ws.getCell(3, C.legend + 1).value = 'completeness';
   ws.getCell(3, C.legend + 2).value = 'accuracy';
+  const full = k => `${colLetter(C.legend + k)}4`;
+  const legendValue = (i, k, total, pts) =>
+    i === 0 ? { formula: `${total}/${p.n || 1}`, result: pts }
+      : TIERS[i].mult ? { formula: `${full(k)}/${1 / TIERS[i].mult}`, result: pts * TIERS[i].mult } : 0;
   TIERS.forEach((t, i) => {
     const r = 4 + i;
-    [t.name, cfg.cPts * t.mult, cfg.aPts * t.mult].forEach((v, k) => {
+    [t.name, legendValue(i, 1, cfg.cTotal, p.c), legendValue(i, 2, cfg.aTotal, p.a)].forEach((v, k) => {
       const cell = ws.getCell(r, C.legend + k);
       cell.value = v;
       cell.fill = fill(t.argb);
@@ -223,6 +237,18 @@ function buildGradebook(ExcelJS, { name, questions, cfg, students, grades }) {
     });
   });
   return wb;
+}
+
+// Submission-format problems worth flagging; the content is still shown.
+function formatIssues(paths, expected) {
+  const want = String(expected || '').toLowerCase().split(/[\s,]+/).map(e => e.replace(/^\./, '')).filter(Boolean);
+  const out = [];
+  if (paths.length > 1) out.push(`${paths.length} files submitted (expected one)`);
+  for (const p of paths) {
+    const f = parseCanvasFilename(p);
+    if (f && want.length && !want.includes(f.ext)) out.push(`.${f.ext} submitted, expected ${want.map(e => '.' + e).join(' or ')}`);
+  }
+  return out;
 }
 
 // Canvas import CSV: identity columns + the chosen assignment column, total per student.
@@ -241,6 +267,6 @@ function buildCanvasCsv(roster, colIndex, totals) {
 const G = {
   TIERS, parseCsv, parseCanvasRoster, parseCanvasFilename, buildStudents, parseQuestionLabels,
   parseKeyChunks, cellTier, scoreStudent, colLetter, buildGradebook, buildCanvasCsv,
-  formulaFunctions, keyFunctions, checkFormula, matchLabel,
+  formulaFunctions, keyFunctions, checkFormula, matchLabel, perQuestion, formatIssues,
 };
 if (typeof module !== 'undefined') module.exports = G;

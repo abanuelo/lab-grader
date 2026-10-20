@@ -6,6 +6,10 @@ Everything runs in the browser. Student files are never uploaded: they're read l
 
 ## Use it
 1. **Setup**: drop in the Canvas "Download Submissions" `.zip`, the Canvas gradebook export `.csv` (so non-submitters show up), the assignment instructions `.docx` (question labels like `1a.`), and the answer key `.docx`. Void questions or give everyone full credit on a question.
+   - **Points** come from two totals (default 10 completeness + 5 accuracy = 15), as in the original gradebook legend (`=10/20`).
+     - Full marks = total ÷ graded questions; partial = ½; low effort = ¼; missing = 0.
+     - Voiding a question spreads its points over the rest, so the maximum stays the same.
+   - **Expected file type** (default `xlsx`): any other format, or more than one file, gets a ⚠ in the student list, panel and file header. The content is still shown.
 2. **Grade**: cycle through students and questions. The submission scrolls to the current question, with the key beside it.
    - `1`–`4` set completeness *and* accuracy (full / partial / low / missing).
    - `Shift`+`1`–`4` sets accuracy only.

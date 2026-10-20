@@ -30,7 +30,7 @@ assert.strictEqual(key.get('1e'), 'Question 1: z\n1e(i). 64.8\n1e(ii). 34.92');
 assert.strictEqual(key.get('6a'), 'Question 6: SPSS\nVerification: M = 7.45');
 
 // Scoring reproduces the gradebook legend: 20 graded questions, max 15, 2 voided.
-const cfg = { cPts: 0.5, aPts: 0.25 };
+const cfg = { cTotal: 10, aTotal: 5 };  // per question = total / graded questions (10/20, 5/20)
 const labels = '1a 1b 1c 1d 1e 2a 2b 2c 3a 3b 3c 4a 4b 4c 4d 5a 5b 6a 6b 6c 7a 7b'.split(' ');
 const questions = labels.map(label => ({ label, void: label.startsWith('7') }));
 const allFull = { q: Object.fromEntries(labels.map(l => [l, { c: 0, a: 0 }])) };
@@ -43,6 +43,16 @@ assert.strictEqual(G.scoreStudent({}, questions, cfg, false).total, 0);       //
 assert.strictEqual(G.scoreStudent({}, questions, cfg, true).ungraded, 20);
 const fc = questions.map(q => q.label === '1a' ? { ...q, fullCredit: true } : q);
 assert.strictEqual(G.scoreStudent({}, fc, cfg, true).total, 0.75);           // everyone gets 1a
+
+// Voiding spreads points over the remaining questions: max stays 15 (professor's =10/20 legend).
+const moreVoid = questions.map(q => ['6c', '5b'].includes(q.label) ? { ...q, void: true } : q);
+assert.deepStrictEqual(G.perQuestion(cfg, moreVoid), { n: 18, c: 10 / 18, a: 5 / 18 });
+assert.ok(Math.abs(G.scoreStudent(allFull, moreVoid, cfg, true).total - 15) < 1e-9);
+
+// File-format warnings (content is still shown).
+assert.deepStrictEqual(G.formatIssues(['x/doejane_1001_5001_Lab2.xlsx'], 'xlsx'), []);
+assert.deepStrictEqual(G.formatIssues(['x/doejane_1001_5001_Lab2.docx'], 'xlsx'), ['.docx submitted, expected .xlsx']);
+assert.deepStrictEqual(G.formatIssues(['x/a_1_2_A.xlsx', 'x/a_1_3_B.pdf'], '.xlsx, xlsm'), ['2 files submitted (expected one)', '.pdf submitted, expected .xlsx or .xlsm']);
 
 // Labels in student work: real labels match, work that merely starts with a number does not.
 const L = t => JSON.stringify(G.matchLabel(t));
@@ -92,6 +102,11 @@ assert.strictEqual(G.checkFormula('STANDARDIZE(57,45,12)', 1, 'z = 12 / 12 = 1')
   assert.strictEqual(ws.getCell('AA4').value, 'wow');
   assert.strictEqual(ws.getCell('B6').fill.fgColor.argb, 'FF000000');        // non-submitter is black
   assert.strictEqual(ws.getCell('AA6').value, 'no submission');
+  assert.strictEqual(ws.getCell('AC4').formula, '10/20');                      // legend derivation like the original
+  assert.strictEqual(ws.getCell('AD4').formula, '5/20');
+  assert.strictEqual(ws.getCell('AC5').formula, 'AC4/2');
+  assert.strictEqual(ws.getCell('AD6').formula, 'AD4/4');
+  assert.strictEqual(ws.getCell('AC7').value, 0);
 
   // Canvas import CSV keeps identity cols + chosen assignment, fills totals, preserves points row.
   const out = G.buildCanvasCsv(roster, 6, { 1001: 14.875, 1002: 13.5, 1003: 0 });
