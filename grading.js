@@ -80,6 +80,16 @@ function parseQuestionLabels(paragraphs) {
   return out;
 }
 
+// Question label at the start of a cell/paragraph: "1a.", "Q1a", "1E", "Question 2b" -> {label:'1a', sec:'1'}.
+// Section-only when unambiguous ("Q1.", "Question 3", "4.") -> {label:null, sec}. Work like "19.8=x-45" is not a label.
+function matchLabel(text) {
+  const t = String(text);
+  let m = t.match(/^\s*(?:Q(?:uestion)?\s*#?\s*)?(\d+)\s*([a-z])(?![a-z0-9])/i);
+  if (m) return { label: (m[1] + m[2]).toLowerCase(), sec: m[1] };
+  m = t.match(/^\s*Q(?:uestion)?\s*#?\s*(\d+)(?!\d|\.\d)/i) || t.match(/^\s*(\d+)\s*[.)]\s*$/);
+  return m ? { label: null, sec: m[1] } : null;
+}
+
 // Key text per label. "1e(i)."/"1e(ii)." fold into "1e"; text under a "Question N:" heading before the
 // first label (e.g. Q6's verification lines) is kept as that section's preamble for every Nx label.
 function parseKeyChunks(paragraphs) {
@@ -121,6 +131,39 @@ function scoreStudent(grade, questions, cfg, hasSubmission) {
     acc += a == null ? 0 : cfg.aPts * TIERS[a].mult;
   }
   return { comp, acc, total: comp + acc, ungraded };
+}
+
+// ---------- Excel formula checks ----------
+// Legacy/compatibility names -> modern names, so a student's NORMSINV counts as the key's NORM.S.INV.
+const FN_ALIASES = {
+  NORMSINV: 'NORM.S.INV', NORMSDIST: 'NORM.S.DIST', NORMINV: 'NORM.INV', NORMDIST: 'NORM.DIST',
+  STDEV: 'STDEV.S', STDEVP: 'STDEV.P', VAR: 'VAR.S', VARP: 'VAR.P', TINV: 'T.INV.2T', TDIST: 'T.DIST.2T',
+  PERCENTILE: 'PERCENTILE.INC', QUARTILE: 'QUARTILE.INC', MODE: 'MODE.SNGL',
+};
+const normFn = name => { const u = name.toUpperCase().replace(/^_XL(FN|WS)\./, ''); return FN_ALIASES[u] || u; };
+const FN_CALL = /([A-Za-z_][A-Za-z0-9_.]*)\s*\(/g;
+
+const formulaFunctions = formula => [...new Set([...String(formula).matchAll(FN_CALL)].map(m => normFn(m[1])))];
+
+// Functions the key mentions, e.g. “=norm.s.inv(.2)” or “=Norm.S.Dist”.
+const keyFunctions = text => [...new Set([...String(text).matchAll(/=\s*([A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z0-9]+)+|[A-Za-z][A-Za-z0-9]*(?=\s*\())/g)].map(m => normFn(m[1])))];
+
+const keyNumbers = text => [...String(text).replace(/[−–]/g, '-').matchAll(/-?\d*\.?\d+/g)].map(m => m[0]);
+
+// What one student formula tells the grader, relative to the key text for that question.
+function checkFormula(formula, result, keyText) {
+  const fns = formulaFunctions(formula), keyFns = keyFunctions(keyText);
+  const refs = /\$?[A-Z]{1,3}\$?\d+/.test(String(formula).replace(FN_CALL, ''));
+  const constant = !fns.length && !refs && /^\s*-?[\d.]+\s*$/.test(formula);
+  let match = null;
+  if (typeof result === 'number') {
+    for (const k of keyNumbers(keyText)) {
+      // Compare at the key's precision (-0.8416 ≈ -0.84); whole numbers must match exactly (0.8849 is not "1").
+      const dp = (k.split('.')[1] || '').length;
+      if (Math.abs(result - parseFloat(k)) <= (dp ? 0.5 * 10 ** -dp : 0) + 1e-9) { match = k; break; }
+    }
+  }
+  return { fns, keyFns, sameFns: fns.filter(f => keyFns.includes(f)), constant, refs, match };
 }
 
 const colLetter = n => { let s = ''; for (; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s; return s; };
@@ -198,5 +241,6 @@ function buildCanvasCsv(roster, colIndex, totals) {
 const G = {
   TIERS, parseCsv, parseCanvasRoster, parseCanvasFilename, buildStudents, parseQuestionLabels,
   parseKeyChunks, cellTier, scoreStudent, colLetter, buildGradebook, buildCanvasCsv,
+  formulaFunctions, keyFunctions, checkFormula, matchLabel,
 };
 if (typeof module !== 'undefined') module.exports = G;

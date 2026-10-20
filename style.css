@@ -74,6 +74,7 @@ table.sheet { border-collapse: collapse; font-size: 13px; }
 table.sheet th { background: var(--bg); color: var(--muted); font-weight: 400; font-size: 11px; border: 1px solid var(--line); padding: 1px 6px; position: sticky; left: 0; }
 table.sheet thead th { top: 28px; z-index: 1; }
 table.sheet td { border: 1px solid #edf0f3; padding: 2px 6px; vertical-align: top; max-width: 460px; white-space: pre-wrap; }
+table.sheet td.f { background: #eef4ff; }
 table.sheet td.f code { display: block; font-size: 11px; color: var(--accent); white-space: nowrap; }
 table.sheet tr.gap td { color: var(--muted); font-size: 11px; background: var(--bg); text-align: center; }
 table.sheet tr.img img { max-width: min(100%, 900px); border: 1px solid var(--line); }
@@ -96,6 +97,14 @@ iframe.pdf { width: 100%; height: 85vh; border: 0; }
 .tier.t1 { border-color: #d6d600; }
 .tier:hover { opacity: .85; }
 .tier.sel { opacity: 1; outline: 3px solid var(--accent); outline-offset: 1px; font-weight: 700; }
+ul.formulas { list-style: none; margin: 4px 0; padding: 0; font-size: 12px; }
+ul.formulas li { padding: 5px 6px; border: 1px solid var(--line); border-radius: 6px; margin-bottom: 4px; cursor: pointer; }
+ul.formulas li:hover { border-color: var(--accent); }
+ul.formulas code { color: var(--accent); }
+.tag { display: inline-block; font-size: 11px; padding: 0 5px; margin: 2px 3px 0 0; border-radius: 4px; background: var(--line); }
+.tag.ok { background: #d9f2dc; color: var(--t0); }
+.tag.warn { background: #fff4b8; color: #6b5800; }
+p.warn { color: #8a6d00; }
 details { margin-top: 12px; }
 summary { cursor: pointer; font-weight: 600; font-size: 12px; }
 pre.key { white-space: pre-wrap; font: 13px/1.45 system-ui, sans-serif; background: #eef4ff; border-left: 3px solid var(--accent); padding: 8px 10px; margin: 6px 0; max-height: 40vh; overflow: auto; }

@@ -44,6 +44,32 @@ assert.strictEqual(G.scoreStudent({}, questions, cfg, true).ungraded, 20);
 const fc = questions.map(q => q.label === '1a' ? { ...q, fullCredit: true } : q);
 assert.strictEqual(G.scoreStudent({}, fc, cfg, true).total, 0.75);           // everyone gets 1a
 
+// Labels in student work: real labels match, work that merely starts with a number does not.
+const L = t => JSON.stringify(G.matchLabel(t));
+assert.strictEqual(L('1a. Identify'), '{"label":"1a","sec":"1"}');
+assert.strictEqual(L('1E'), '{"label":"1e","sec":"1"}');
+assert.strictEqual(L('Q2b'), '{"label":"2b","sec":"2"}');
+assert.strictEqual(L('1e(ii)'), '{"label":"1e","sec":"1"}');
+assert.strictEqual(L('Q1.'), '{"label":null,"sec":"1"}');
+assert.strictEqual(L('Question 3'), '{"label":null,"sec":"3"}');
+assert.strictEqual(L('4.'), '{"label":null,"sec":"4"}');
+for (const t of ['19.8=x-45-', '1.65=x-45/12', '12 SD', '2 standard deviations', '64.8', '-10.08', '(ii)', '4x4']) assert.strictEqual(G.matchLabel(t), null, t);
+
+// Formula checks: legacy names alias to modern ones, constants flagged, results matched at key precision.
+assert.deepStrictEqual(G.formulaFunctions('_xlfn.NORM.S.INV(0.2)'), ['NORM.S.INV']);
+assert.deepStrictEqual(G.formulaFunctions('NORMSDIST(0-0.84)+ABS(B2)'), ['NORM.S.DIST', 'ABS']);
+assert.deepStrictEqual(G.keyFunctions('Below: “=Norm.S.Dist” = .9772; cutoff (“=norm.s.inv(.2)”) X = 45 + z(σ); =SUM(A1:A3)'), ['NORM.S.DIST', 'NORM.S.INV', 'SUM']);
+const keyText = 'Cutoff (“=norm.s.inv(.2)”) → z ≈ −0.84. X = 45 + (−0.84)(12) = 34.92';
+let chk = G.checkFormula('NORMSINV(0.2)', -0.8416212335729145, keyText);
+assert.deepStrictEqual([chk.sameFns, chk.constant, chk.match], [['NORM.S.INV'], false, '-0.84']);
+chk = G.checkFormula('-10.08+45', 34.92, keyText);
+assert.deepStrictEqual([chk.fns, chk.constant, chk.match], [[], false, '34.92']);
+chk = G.checkFormula('64.8', 64.8, keyText);
+assert.deepStrictEqual([chk.constant, chk.match], [true, null]);
+assert.strictEqual(G.checkFormula('(B6-B7)/B8', 2, 'z = 2').refs, true);
+assert.strictEqual(G.checkFormula('0.8849', 0.8849, 'z = 1.20: “=norm.s.dist(1.20)” = .8849').match, '.8849');  // not "1"
+assert.strictEqual(G.checkFormula('STANDARDIZE(57,45,12)', 1, 'z = 12 / 12 = 1').match, '1');
+
 // Gradebook export: layout, fills, formulas, merged total, notes.
 (async () => {
   const grades = { 1001: oneYellow, 1002: { ...twoBlack, note: 'wow' } };

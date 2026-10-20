@@ -9,6 +9,7 @@ let S = loadState();
 let zip = null, zipPaths = [], roster = null, keyChunks = null, instrLabels = [], students = [];
 let cur = { s: 0, q: 0 };
 let objectUrls = [];
+let formulas = [], subKinds = new Set();  // Excel formulas found in the current submission, and its file types
 
 function loadState() {
   try { const s = JSON.parse(localStorage.getItem(KEY)); if (s) return s; } catch {}
@@ -170,6 +171,7 @@ function renderPanel() {
       ${locked ? `<p class="locked">${locked}</p>` : `
         <div class="lbl">Completeness <span class="muted">— key <kbd>1</kbd>–<kbd>4</kbd> sets both</span></div><div class="tiers">${btns('c')}</div>
         <div class="lbl">Accuracy <span class="muted">— <kbd>⇧</kbd>+<kbd>1</kbd>–<kbd>4</kbd></span></div><div class="tiers">${btns('a')}</div>`}
+      ${formulaSection(q)}
       <details open><summary>Answer key</summary><pre class="key">${esc(keyChunks ? keyChunks.get(q.label) || '(no key text for this label)' : 'Load the key .docx in Setup.')}</pre></details>
       <div class="lbl">Notes for this student</div>
       <textarea id="note" rows="3" placeholder="e.g. 1e(ii) incomplete; collab: …">${esc(g.note || '')}</textarea>
@@ -178,17 +180,51 @@ function renderPanel() {
     </div>`;
 }
 
-// ---------- Submission rendering ----------
-const LABEL_RE = /^\s*(?:Q(?:uestion)?\s*#?\s*)?(\d+)\s*([a-z])?\b/i;
+// Student's Excel formulas for this question, checked against the functions and numbers in the key.
+function formulaSection(q) {
+  if (!subKinds.has('xlsx') && !subKinds.has('xlsm')) {
+    return subKinds.size ? '<div class="lbl">Excel formulas</div><p class="muted small">Not an Excel file — no formulas to check.</p>' : '';
+  }
+  const lab = q.label.toLowerCase(), n = (lab.match(/^\d+/) || [''])[0];
+  const keyText = keyChunks ? keyChunks.get(q.label) : '';
+  const keyFns = G.keyFunctions(keyText);
+  const item = (f, showQ) => {
+    // In the all-formulas list, check each formula against the key for the question it sits under.
+    const kt = showQ && f.label && keyChunks ? keyChunks.get(f.label) : keyText;
+    const c = G.checkFormula(f.formula, f.result, kt);
+    const tags = [
+      ...c.fns.map(fn => `<span class="tag ${c.sameFns.includes(fn) ? 'ok' : ''}">${c.sameFns.includes(fn) ? '✓ ' : ''}${esc(fn)}</span>`),
+      c.constant ? '<span class="tag warn">typed value, no work shown</span>' : '',
+      c.match != null ? `<span class="tag ok">≈ key ${esc(c.match)}</span>` : '',
+    ].join('');
+    return `<li data-addr="${esc(f.addr)}" title="Show in sheet">${showQ ? `<span class="muted">Q${esc(f.label || f.sec || '?')}</span> ` : ''}<b>${esc(f.addr.split('!').pop())}</b> <code>=${esc(f.formula)}</code> → ${esc(f.text)}<div>${tags}</div></li>`;
+  };
+  const mine = formulas.filter(f => (f.label ? f.label === lab : f.sec === n));
+  return `<div class="lbl">Excel formulas for Q${esc(q.label)}${keyFns.length ? ` <span class="muted">— key uses ${keyFns.map(esc).join(', ')}</span>` : ''}</div>
+    ${!formulas.length ? '<p class="warn small">No formulas anywhere in this workbook — values were typed in.</p>'
+      : mine.length ? `<ul class="formulas">${mine.map(f => item(f, false)).join('')}</ul>`
+      : '<p class="muted small">None under this question’s label (check “All formulas” below).</p>'}
+    ${formulas.length ? `<details><summary>All formulas in this workbook (${formulas.length})</summary><ul class="formulas">${formulas.map(f => item(f, true)).join('')}</ul></details>` : ''}`;
+}
 
+// ---------- Submission rendering ----------
 function revokeUrls() { objectUrls.forEach(URL.revokeObjectURL); objectUrls = []; }
 function blobUrl(data, type) { const u = URL.createObjectURL(new Blob([data], { type })); objectUrls.push(u); return u; }
 
+// A label at the start of text, kept only if it names a question in this assignment ("2x" in "2 x 3" is not one).
+function labelIn(text) {
+  const m = G.matchLabel(text);
+  if (!m) return null;
+  const ok = m.label ? S.questions.some(q => q.label.toLowerCase() === m.label)
+    : S.questions.some(q => (q.label.match(/^\d+/) || [])[0] === m.sec);
+  return ok ? m : null;
+}
+
 // Tag elements that start with a question label ("1a.", "Q1.") so the grader can jump to them.
 function tagLabel(el, text) {
-  const m = String(text).match(LABEL_RE);
+  const m = labelIn(text);
   if (!m) return false;
-  if (m[2]) el.dataset.label = (m[1] + m[2]).toLowerCase(); else el.dataset.sec = m[1];
+  if (m.label) el.dataset.label = m.label; else el.dataset.sec = m.sec;
   return true;
 }
 
@@ -215,18 +251,23 @@ async function renderXlsx(buf, host) {
     if (!rows.size && !imgs.size) continue;
     const order = [...new Set([...rows.keys(), ...imgs.keys()])].sort((a, b) => a - b);
     let html = `<thead><tr><th></th>${Array.from({ length: maxCol }, (_, i) => `<th>${G.colLetter(i + 1)}</th>`).join('')}</tr></thead><tbody>`;
-    let prev = 0;
+    let prev = 0, curLabel = null, curSec = null;  // the question label a formula sits under
     for (const r of order) {
       if (r - prev > 2) html += `<tr class="gap"><td colspan="${maxCol + 1}">⋯ ${r - prev - 1} empty rows</td></tr>`;
       prev = r;
       const cells = rows.get(r);
       if (cells) {
+        const first = cells.find(c => c && c.text.trim());
+        const m = first && labelIn(first.text);
+        if (m) { curSec = m.sec; curLabel = m.label; }
         html += `<tr data-row="${r}"><th>${r}</th>`;
         for (let c = 1; c <= maxCol; c++) {
           const cell = cells[c];
           if (!cell) { html += '<td></td>'; continue; }
-          const f = cell.formula ? '=' + cell.formula.replace(/_xlfn\./g, '') : '';
-          html += `<td${f ? ' class="f"' : ''}><span>${esc(cell.text)}</span>${f ? `<code>${esc(f)}</code>` : ''}</td>`;
+          const f = cell.formula ? cell.formula.replace(/_xlfn\./g, '') : '';
+          const addr = `${ws.name}!${cell.address}`;
+          if (f) formulas.push({ addr, formula: f, result: cell.result, text: cell.text, label: curLabel, sec: curSec });
+          html += `<td${f ? ` class="f" data-addr="${esc(addr)}"` : ''}><span>${esc(cell.text)}</span>${f ? `<code>=${esc(f)}</code>` : ''}</td>`;
         }
         html += '</tr>';
       }
@@ -264,6 +305,8 @@ async function renderSubmission() {
   const token = ++renderToken;
   revokeUrls();
   host.innerHTML = '';
+  formulas = [];
+  subKinds = new Set(s ? s.files.map(p => G.parseCanvasFilename(p).ext) : []);
   if (!s) return;
   if (!s.files.length) { host.innerHTML = '<p class="muted pad">No submission — every question counts as missing (black).</p>'; return; }
   host.innerHTML = '<p class="muted pad">Loading…</p>';
@@ -289,6 +332,7 @@ async function renderSubmission() {
   host.innerHTML = '';
   host.appendChild(frag);
   host.scrollTop = 0;
+  renderPanel();  // formulas are known now
   focusQuestion();
 }
 
@@ -432,6 +476,13 @@ $('#panel').addEventListener('click', e => {
   const c = e.target.closest('[data-q]');
   if (c) { cur.q = +c.dataset.q; renderPanel(); focusQuestion(); }
   if (e.target.id === 'allFull') fillFull();
+  const fa = e.target.closest('li[data-addr]');
+  const td = fa && $('#submission').querySelector(`td[data-addr="${CSS.escape(fa.dataset.addr)}"]`);
+  if (td) {
+    $('#submission').querySelectorAll('.hit').forEach(x => x.classList.remove('hit'));
+    td.classList.add('hit');
+    td.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
 });
 $('#panel').addEventListener('input', e => {
   if (e.target.id !== 'note') return;

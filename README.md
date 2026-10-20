@@ -9,6 +9,11 @@ Everything runs in the browser. Student files are never uploaded: they're read l
 2. **Grade**: cycle through students and questions. The submission scrolls to the current question, with the key beside it.
    - `1`–`4` set completeness *and* accuracy (full / partial / low / missing).
    - `Shift`+`1`–`4` sets accuracy only.
+   - **Excel formulas** for each question are listed beside the key:
+     - `✓` when the function matches the key (old names like `NORMSINV` count as `NORM.S.INV`);
+     - `≈ key` when the result matches a number in the key;
+     - a warning when a value was typed in instead of computed.
+     - Click a formula to jump to its cell.
    - `↑`/`↓` changes question, `←`/`→` changes student, and `F` fills the remaining questions with full marks.
 3. **Export**:
    - **Gradebook .xlsx**: two rows per student, colored cells, `SUM` formulas.
